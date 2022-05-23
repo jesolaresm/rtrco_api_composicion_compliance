@@ -1,0 +1,89 @@
+# Starter pipeline
+# Start with a minimal pipeline that you can customize to build and deploy your code.
+# Add steps that build, run tests, deploy, and more:
+# https://aka.ms/yaml
+trigger:
+- develop
+- main
+- release/*
+
+variables:
+# grupo de variables para sincronizar github y devops
+- name: var_p_typeTask                        # tipo de agente de compilación
+  value: ec2                              # ec2 | fargate 
+- name: var_p_appName                         # nombre base de aplicación
+  value: api_people
+# -------------------------------  
+- group: github-mirror
+- name: var_p_agentName
+  value: adct_${{variables.var_p_appName}}_ci
+- name: var_p_agentNameBuildId
+  value: ${{variables.var_p_agentName}}-$(Build.BuildId)  
+- name: var_p_sonarProject
+  value: rdct_$(var_p_appName)
+- name: var_p_ecrRepositoryName
+  value: edct_$(var_p_appName)
+- name: var_p_createArtifact
+  value: $[or(eq(variables['Build.SourceBranch'], 'refs/heads/master'),eq(variables['Build.SourceBranch'], 'refs/heads/develop'),startsWith(variables['Build.SourceBranch'], 'refs/heads/release/'))]
+
+#resources:
+#  repositories:
+#    - repository: templates
+#      type: git
+#      name: rdct_util_pipeline
+
+stages:
+#- template: create_agent.yml@templates
+#  parameters:
+#    par_p_typeTask: ${{variables.var_p_typeTask}}
+#    par_p_agentNameBuildId: ${{variables.var_p_agentNameBuildId}}
+
+- stage: 'Build'
+  pool: 
+    name: aws agents default
+    demands: 
+    - AZP_SIZE -equals sm
+  displayName: 'Continuous Integration'
+  jobs: 
+  - job: 'CI'
+    displayName: 'Job de CI'    
+    steps:
+    - task: CmdLine@2
+      displayName: "Lint contract"
+      inputs:
+        script: 'spectral lint reference/*'
+
+    - task: CmdLine@2
+      displayName: "Bundle Contract"
+      inputs:
+        script: |
+          for file in ./reference/*.json; do
+              swagger-cli bundle "$file" -r -o "$(Build.ArtifactStagingDirectory)/bundle/$(basename "$file")"
+          done
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish build'
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+        ArtifactName: 'build'
+        publishLocation: 'Container'
+
+    - task: Bash@3
+      displayName: 'Sync Github'
+      condition: in(variables['Build.SourceBranch'], 'refs/heads/master', 'refs/heads/develop')
+      inputs:
+        targetType: 'inline'
+        script: |
+          branchSource=$(Build.SourceBranch)
+          part="${branchSource#*/}"
+          branch=${part#*/}
+          git remote set-url origin https://$(AzureDevOpsPat)@dev.azure.com/BancoAgromercantilGT/Transformaci%C3%B3n%20Digital/_git/$(Build.Repository.Name)
+          git remote add sync https://$(GitHubPat)@github.com/BAM-GT/$(Build.Repository.Name)
+          git checkout ${branch}
+          git pull
+          git push sync ${branch}
+        workingDirectory: '$(Build.SourcesDirectory)'
+
+#- template: remove_agent.yml@templates
+#  parameters:
+ #   par_p_typeTask: ec2
+ #   par_p_agentNameBuildId: ${{variables.var_p_agentNameBuildId}}
